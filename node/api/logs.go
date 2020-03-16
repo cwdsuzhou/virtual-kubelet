@@ -18,6 +18,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -55,25 +56,17 @@ func HandleContainerLogs(h ContainerLogsHandlerFunc) http.HandlerFunc {
 		namespace := vars["namespace"]
 		pod := vars["pod"]
 		container := vars["container"]
-		tail := 10
 		q := req.URL.Query()
 
-		if queryTail := q.Get("tailLines"); queryTail != "" {
-			t, err := strconv.Atoi(queryTail)
-			if err != nil {
-				return errdefs.AsInvalidInput(errors.Wrap(err, "could not parse \"tailLines\""))
-			}
-			tail = t
+		var (
+			opts *ContainerLogOpts
+			err  error
+		)
+		if opts, err = formatContainerLogOpts(q); err != nil {
+			return err
 		}
 
-		// TODO(@cpuguy83): support v1.PodLogOptions
-		// The kubelet decoding here is not straight forward, so this needs to be disected
-
-		opts := ContainerLogOpts{
-			Tail: tail,
-		}
-
-		logs, err := h(ctx, namespace, pod, container, opts)
+		logs, err := h(ctx, namespace, pod, container, *opts)
 		if err != nil {
 			return errors.Wrap(err, "error getting container logs?)")
 		}
@@ -91,4 +84,47 @@ func HandleContainerLogs(h ContainerLogsHandlerFunc) http.HandlerFunc {
 		}
 		return nil
 	})
+}
+
+// formatContainerLogOpts formats the logs options
+func formatContainerLogOpts(q url.Values) (*ContainerLogOpts, error) {
+	tail := 10
+	var since time.Duration = 0
+	limitBytes := 0
+
+	if queryTail := q.Get("tailLines"); queryTail != "" {
+		t, err := strconv.Atoi(queryTail)
+		if err != nil {
+			return nil, errdefs.AsInvalidInput(errors.Wrap(err, "could not parse \"tailLines\""))
+		}
+		tail = t
+	}
+	if querySince := q.Get("since"); querySince != "" {
+		s, err := time.ParseDuration(querySince)
+		if err != nil {
+			return nil, errdefs.AsInvalidInput(errors.Wrap(err, "could not parse \"since\""))
+		}
+		since = s
+	}
+	if queryLimitBytes := q.Get("limitBytes"); queryLimitBytes != "" {
+		l, err := strconv.Atoi(queryLimitBytes)
+		if err != nil {
+			return nil, errdefs.AsInvalidInput(errors.Wrap(err, "could not parse \"limitBytes\""))
+		}
+		limitBytes = l
+	}
+
+	// TODO(@cpuguy83): support v1.PodLogOptions
+	// The kubelet decoding here is not straight forward, so this needs to be disected
+
+	opts := &ContainerLogOpts{
+		Tail: tail,
+	}
+	if since != 0 {
+		opts.Since = since
+	}
+	if limitBytes != 0 {
+		opts.LimitBytes = limitBytes
+	}
+	return opts, nil
 }
